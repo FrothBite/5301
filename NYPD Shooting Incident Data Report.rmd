@@ -1,0 +1,157 @@
+---
+title: "NYPD Shooting Incident Data (Historic)"
+author: "G. E."
+output:
+    html_document: default
+    pdf_document: default
+---
+
+## Intro
+NYPD Shooting Incident Data (Historic)
+Metadata Updated: April 19, 2025
+
+This document analyzes shooting incident numbers in NYC from 2006-2024. We'll explore how shooting incidents are affected by location and time.
+
+> **Dataset Description**:
+> This is a breakdown of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year. This data is manually extracted every quarter and reviewed by the Office of Management Analysis and Planning before being posted on the NYPD website. Each record represents a shooting incident in NYC and includes information about the event, the location and time of occurrence. In addition, information related to suspect and victim demographics is also included. This data can be used by the public to explore the nature of shooting/criminal activity. Please refer to the attached data footnotes for additional information about this dataset.
+
+## Setup the R Environment
+To setup the R environment, libraries `lubridate` and `tidyverse` were imported.
+```{r setup, include = FALSE}
+library(lubridate)
+library(tidyverse)
+```
+
+## Import the Data
+The dataset was imported via URL, made publicly available by the City of New York.
+
+Dataset URL: "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+```{r load_data, message = FALSE, warning = FALSE}
+shootings_url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD" # nolint: line_length_linter.
+shootings <- read_csv(shootings_url)
+```
+
+## Data Cleaning
+Data was cleaned by ensuring proper date conversions and removing variables deemed unnecessary for the given research instance.
+```{r clean_data}
+shootings_clean <- shootings %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE),
+         OCCUR_TIME = hms(OCCUR_TIME),
+         across(c(BORO, LOC_OF_OCCUR_DESC, LOC_CLASSFCTN_DESC, LOCATION_DESC,
+                  PERP_SEX, PERP_RACE, VIC_AGE_GROUP, VIC_SEX, VIC_RACE),
+                as.factor)) %>%
+  select(-c(X_COORD_CD, Y_COORD_CD, Latitude, Longitude, Lon_Lat))
+```
+
+### Data Summary
+```{r summarize}
+summary(shootings_clean)
+```
+
+### Missing Data
+```{r missing_data}
+missing_report <- shootings_clean %>%
+  summarize(across(everything(), ~ round(mean(is.na(.x)) * 100, 2))) %>%
+  pivot_longer(everything(), names_to = "column", values_to = "pct_missing") %>%
+  filter(pct_missing > 0)
+print("Missing Data by Percetage > 0")
+missing_report
+shootings_clean <- shootings_clean %>%
+  select(-c(LOC_OF_OCCUR_DESC, LOC_CLASSFCTN_DESC))
+```
+Missing data fields for perpetrator descriptions were retained due to their implication that the traits were "unconfirmed", rather than not being captured due to poor data integrity. Its possible that the missing descriptions are due to a case being unresolved. A large number of entries missing such fields may also indicate greater levels of sophistication and planning by the perpetrator. Another implication may be that people struggling with vision or memory are being targeted.
+
+However, variables `LOC_OF_OCCUR_DESC` and `LOC_CLASSFCTN_DESC` both had a significant percentage of values missing (over 80%). For this reason, it was decided that excluding them from further analysis would be most efficient, as their potential for extracting insight was deemed insignificant.
+
+## Visualize and Analyze
+
+NYC Shootings Trends by Year
+```{r annual_shootings, warning = FALSE}
+shootings_clean <- shootings_clean %>% # add year and percent change
+  mutate(YEAR = year(OCCUR_DATE))
+shootings_clean %>% # graph annual
+  count(YEAR) %>%
+  ggplot(aes(x = YEAR, y = n)) +
+  geom_line() +
+  geom_point() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Shootings in NYC by Year", y = NULL)
+shootings_clean %>% # graph percent change
+  count(YEAR) %>%
+  mutate(pct_change = (n - lag(n)) / lag(n) * 100) %>%
+  ggplot(aes(x = YEAR, y = pct_change)) +
+  geom_line() +
+  geom_point() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle=90)) +
+  labs(title = "Percentage Change in Annual Shootings in NYC", y = NULL)
+```
+
+
+NYC Shootings by Borough
+```{r borough_shootings}
+shootings_clean %>%
+  count(BORO) %>%
+  ggplot(aes(x = BORO, y = n)) +
+  geom_col() +
+  coord_flip() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(title = "NYC Shootings per Borough",
+       x = "Borough",
+       y = NULL)
+```
+
+## Modeling
+Shootings by Time of Day
+```{r hour_shootings}
+shootings_time <- shootings_clean %>%
+  mutate(HOUR = hour(OCCUR_TIME),
+         SHIFTED_HOUR = (HOUR - 3) %% 24) %>%
+  count(SHIFTED_HOUR, name = "INCIDENT_CNT")
+mod <- lm(INCIDENT_CNT ~ SHIFTED_HOUR, data = shootings_time)
+shootings_time_pred <- shootings_time %>% mutate(pred = predict(mod))
+shootings_time_pred %>%
+  ggplot() +
+  geom_point(aes(x = SHIFTED_HOUR, y = INCIDENT_CNT), color = "blue") +
+  geom_point(aes(x = SHIFTED_HOUR, y = pred), color = "red")
+```
+
+When examining the number of shooting incidents by hour, a trend was revealed indicating that the likelihood of an incident was at its lowest around 6am, and increases to its peak at 11pm in a surprisingly linear manner. The times were shifted by 3 hours to better highlight the linearity. `0` on the graph represents "3am" or "0300 hours".
+
+### Additional Questions Raised
+These illuminating visualizations sparked greater questions for further analysis. The inclusion of population and population density, as well as average net worth and income for particular boroughs could be a worthwhile pursuit.
+Additionally, seemingly unusual data points like the number of skyscrapers and tourist attractions in a given area could also yield interesting insights.
+
+Shootings were on the decline until spiking in 2020. Was this due to the impacts of COVID and lockdowns? Did data collection standards suddenly jump, boosting the percent of shootings recorded?
+
+Shooting incidents and time have a shockingly linear relationship; how might this be affected by the presence of "late night" businesses and activities like nightclubs and 24/7 restaurants?
+
+## Bias
+### Potential Bias Sources
+Bias has many entry points into this research process. Below are a list of potential biases. Notice how they coincide with the **Additional Questions Raised** section above.
+
+- Views on race.
+- Police perception.
+- Opinions on class and wealth.
+- Prior experience with crime.
+- Gun handling experience.
+- Opinions of the locations themselves (specific boroughs, New York City, New York State, the United States, and North America).
+
+### Bias Mitigation Techniques
+Several techniques were used to reduce introduced biases.
+
+A fundamental starting point is to engage in self-reflection to develop an understanding of personal biases. Like the exercise proposed in the **Bias sources** lecture, take some time to write down all the biases you may have, and do your best to measure its quality and magnitude. Much like those surveys where answers scale from "*Strongly Agree*" to "*Strongly Disagree*".
+
+Next, approach the problem from a differing point of view. Engage in a self-dialogue with these opposing viewpoints, or consult others who may be able to engage in this conversation with you, without it becoming emotionally charged. Seek to achieve a greater level of understanding.
+
+Another useful bias techniques could be metadata obfuscation, such that a human can't impose their own bias but are still able to conduct effective research. For instance, anonymizing the characteristics of perpetrators and victims.
+In terms of data modeling, bias inherent in the model could be reduced by comparing the outputs of multiple, different models.
+
+## Conclusion
+Results show that shooting indicents are disproportionately reported and captured in the Brooklyn and Bronx boroughs. The rate of incidents surged in 2020 to 100% and immediately returned to oscillating within a range of -20% and 10%.
+
+Session Info
+```{r session_info}
+sessionInfo()
+```
