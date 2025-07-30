@@ -1,0 +1,209 @@
+---
+title: "COVID-19 Case Data"
+author: "G. E."
+output:
+    html_document: default
+    pdf_document: default
+---
+
+## Introduction
+John Hopkins University (JHU) Center for Systems Science and Engineering (CSSE)
+Last Updated: March 10, 2023
+
+This document analyzes COVID mortality.
+
+> **Dataset Description**:
+> This is the data repository for the 2019 Novel Coronavirus Visual Dashboard operated by the Johns Hopkins University Center for Systems Science and Engineering (JHU CSSE). Also, Supported by ESRI Living Atlas Team and the Johns Hopkins University Applied Physics Lab (JHU APL).
+
+## Setup the R Environment
+To setup the R environment, libraries `lubridate` and `tidyverse` were imported.
+```{r setup, include = FALSE}
+library(lubridate)
+library(tidyverse)
+```
+
+## Import the Data
+The dataset was imported via URL, made publicly available on Github by the JHU CSSE.
+
+Dataset URL: "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+```{r load_data, message = FALSE, warning = FALSE}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/" # nolint: line_length_linter.
+file_names <- c("time_series_covid19_confirmed_global.csv",
+                "time_series_covid19_deaths_global.csv",
+                "time_series_covid19_confirmed_US.csv",
+                "time_series_covid19_deaths_US.csv")
+urls <- str_c(url_in, file_names) # string concatenate
+global_cases <- read_csv(urls[1])
+global_deaths <- read_csv(urls[2])
+us_cases <- read_csv(urls[3])
+us_deaths <- read_csv(urls[4])
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv" # nolint: line_length_linter.
+uid <- read_csv(uid_lookup_url) %>% # uid lookup
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+```
+
+## Data Cleaning
+
+```{r clean_data, message = FALSE}
+global_cases <- global_cases %>% # global cases
+  pivot_longer(cols = -c("Province/State",
+                         "Country/Region", Lat, Long),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(-c(Lat, Long))
+global_deaths <- global_deaths %>% # global deaths
+  pivot_longer(cols = -c("Province/State",
+                         "Country/Region", Lat, Long),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(-c(Lat, Long))
+global <- global_cases %>% # global all
+  full_join(global_deaths) %>%
+  rename(Country_Region = "Country/Region",
+         Province_State = "Province/State") %>%
+  mutate(date = mdy(date))
+global <- global %>% filter(cases > 0)
+global <- global %>%
+  unite("Combined_Key",
+        c(Province_State, Country_Region),
+        sep = ", ",
+        na.rm = TRUE,
+        remove = FALSE)
+global <- global %>%
+  left_join(uid, by = c("Province_State", "Country_Region")) %>%
+  select(-c(UID, FIPS)) %>%
+  select(Province_State, Country_Region, date,
+         cases, deaths, Population,
+         Combined_Key)
+us_cases %>% # us cases
+  pivot_longer(cols = -(UID:Combined_Key),
+               names_to = "date",
+               values_to = "cases")
+us_cases <- us_cases %>%
+  pivot_longer(cols = -(UID:Combined_Key),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+us_deaths <- us_deaths %>% # us deaths
+  pivot_longer(cols = -(UID:Population),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+us <- us_cases %>% # us all
+  full_join(us_deaths)
+```
+
+## Visualize and Analyze
+
+### Visualizations
+```{r visual}
+us_by_state <- us %>% # us state
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>%
+  select(Province_State, Country_Region, date, cases, deaths, deaths_per_mill,
+         Population) %>%
+  ungroup()
+us_totals <- us_by_state %>% # us totals
+  group_by(Country_Region, date) %>%
+  summarise(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>%
+  select(Country_Region, date,
+         cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+us_totals %>% # line graph of us totals
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y = NULL)
+state <- "Colorado"
+colo <- us_by_state %>%
+  filter(Province_State == state) %>%
+  filter(cases > 0)
+colo %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("COVID19 in ", state), y = NULL)
+```
+
+### Analysis
+```{r analysis}
+us_by_state <- us_by_state %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+us_totals <- us_totals %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+us_by_state %>%
+  filter(Province_State == state) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y = NULL)
+colo <- colo %>%
+  mutate(YEAR = year(date))
+colo %>%
+  count(YEAR) %>%
+  mutate(pct_change = (n - lag(n)) / lag(n) * 100) %>%
+  ggplot(aes(x = YEAR, y = pct_change)) +
+  geom_line() +
+  geom_point() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle=90)) +
+  labs(title = "Percentage Change in Annual Cases", y = NULL)
+```
+
+COVID-19 Case rates in Colorado dropped significantly since being tracked.
+
+## Modeling
+```{r runway}
+mod <- lm(deaths ~ cases, data = colo)
+colo %>% mutate(pred = predict(mod))
+colo_w_pred <- colo %>% mutate(pred = predict(mod))
+colo_w_pred %>% ggplot() +
+  geom_point(aes(x = cases, y = deaths), color = "blue") +
+  geom_point(aes(x = cases, y = pred), color = "red")
+```
+
+There's an incredibly strong relationship between cases and deaths.
+
+### Additional Questions
+How did vaccine distribution affect case numbers?
+
+## Bias
+COVID was pervasive, world-changing, and devasting. Some people were more affected than others. Those who were greatly affected, maybe lost a loved one, may attempt to extract more insight than there is. Whereas someone who was less affected may opt to take a more surface level approach.
+
+### Bias Mitigation Techniques
+A fundamental starting point is to engage in self-reflection to develop an understanding of personal biases. Approach the problem from a differing point of view, seeking a greater level of understanding and objectivity.
+
+## Conclusion
+
+Colorado COVID-19 cases and deaths have an high correlation. Even post-vaccine distribution.
+
+Session Info
+```{r session_info}
+sessionInfo()
+```
